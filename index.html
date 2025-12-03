@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Daily Market Bias – 60-Year Quant</title>
+  <meta http-equiv="refresh" content="300"> <!-- auto-refresh every 5 min -->
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap');
+    body { margin:0; font-family:'JetBrains Mono', monospace; background:#0d1117; color:#c9d1d9; display:flex; align-items:center; justify-content:center; min-height:100vh; }
+    .card { background:#161b22; padding:30px 40px; border-radius:16px; box-shadow:0 10px 30px rgba(0,0,0,0.8); max-width:680px; width:90%; text-align:center; border:1px solid #30363d; }
+    h1 { color:#58a6ff; margin:0 0 20px; }
+    pre { background:#0d1117; padding:20px; border-radius:12px; text-align:left; white-space:pre-wrap; font-size:18px; line-height:1.6; }
+    .bias { font-size:42px; font-weight:bold; margin:20px 0; }
+    .bullish { color:#39d353; }
+    .bearish { color:#f85149; }
+    .neutral { color:#f0b90b; }
+    .footer { margin-top:30px; font-size:13px; color:#8b949e; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>60-Year Quant Daily Bias</h1>
+    <div id="bias"></div>
+    <div class="footer">Auto-updated every trading day at 4:00 AM ET • $0 budget model</div>
+  </div>
+
+  <script>
+    fetch('latest_bias.txt?' + Date.now())
+      .then(r => r.text())
+      .then(text => {
+        const div = document.getElementById('bias');
+        div.innerHTML = '<pre>' + text.replace(/\n/g, '<br>') + '</pre>';
+        
+        // Color the final bias line
+        if (text.includes('STRONG BULLISH')) div.innerHTML = div.innerHTML.replace('STRONG BULLISH', '<span class="bias bullish">STRONG BULLISH</span>');
+        else if (text.includes('BULLISH')) div.innerHTML = div.innerHTML.replace('BULLISH', '<span class="bias bullish">BULLISH</span>');
+        else if (text.includes('STRONG BEARISH')) div.innerHTML = div.innerHTML.replace('STRONG BEARISH', '<span class="bias bearish">STRONG BEARISH</span>');
+        else if (text.includes('BEARISH')) div.innerHTML = div.innerHTML.replace('BEARISH', '<span class="bias bearish">BEARISH</span>');
+        else if (text.includes('NEUTRAL')) div.innerHTML = div.innerHTML.replace('NEUTRAL', '<span class="bias neutral">NEUTRAL</span>');
+      })
+      .catch(() => document.getElementById('bias').innerHTML = '<pre>Updating… check back in a minute</pre>');
+  </script>
+</body>
+</html>
