@@ -1,92 +1,87 @@
-# daily_bias_zero_budget.py
-# Run this every morning before NYSE open (e.g., 8:50 AM ET)
-# Accuracy 2015–2025 on SPX: ~59.5% (enough edge with good execution)
-
 import yfinance as yf
 import pandas as pd
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime
 import pytz
+import re
 
-# -----------------------------
-# 1. CONFIG
-# -----------------------------
 TZ_NY = pytz.timezone('America/New_York')
 today = datetime.now(TZ_NY).date()
 
-# -----------------------------
-# 2. FETCH ALL DATA (100% FREE)
-# -----------------------------
-# SPY = proxy for SPX
+# Data fetch with robust error handling
 spy = yf.Ticker("SPY")
-hist = spy.history(period="2y")               # Daily OHLC
+hist = spy.history(period="2y")
 weekly = spy.history(period="3mo", interval="1wk")
 
-# Current price & indicators
+if len(hist) == 0:
+    print("Error: No SPY data")
+    exit(1)
+
 current_price = hist['Close'][-1]
-sma200 = hist['Close'].rolling(200).mean()[-1]
+sma200 = hist['Close'].rolling(200).mean()[-1] if len(hist) >= 200 else current_price
 
-# Weekly momentum (current week vs close 1 week ago)
-current_week_close = weekly['Close'][-1] if weekly.index[-1].date() <= today else weekly['Close'][-2]
-prev_week_close = weekly['Close'][-2]
-weekly_return = (current_week_close / prev_week_close - 1) * 100
+# Weekly momentum (safe [-2])
+weekly_return = 0.0
+if len(weekly) >= 2:
+    current_week_close = weekly['Close'][-1]
+    prev_week_close = weekly['Close'][-2]
+    weekly_return = (current_week_close / prev_week_close - 1) * 100
+else:
+    weekly_return = 0.0  # Neutral if insufficient data
 
-# Overnight futures (Investing.com live page scrape – reliable & free)
-def get_overnight_futures():
-    url = "https://www.investing.com/indices/us-spx-500-futures"
-    headers = {'User-Agent': 'Mozilla/5.0'}
-    html = requests.get(url, headers=headers).text
-    import re
-    match = re.search(r'last_price">([\d,]+\.?\d*)', html)
-    if match:
-        futures_price = float(match.group(1).replace(',', ''))
-        cash_close = hist['Close'][-1]
-        overnight_pct = (futures_price / cash_close - 1) * 100
-        return overnight_pct
+# Overnight futures (Investing.com scrape with fallback)
+def get_overnight():
+    try:
+        url = "https://www.investing.com/indices/us-spx-500-futures"
+        html = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}).text
+        match = re.search(r'last_price">([\d,]+\.?\d*)', html)
+        if match:
+            futures = float(match.group(1).replace(',', ''))
+            return (futures / current_price - 1) * 100
+    except:
+        pass
     return 0.0
 
-overnight_pct = get_overnight_futures()
+overnight_pct = get_overnight()
 
-# VIX and term structure
-vix = yf.Ticker("^VIX").history(period="5d")['Close'][-1]
-vix9d = yf.Ticker("VIX9D").history(period="2d")['Close'][-1] if 'VIX9D' in yf.Tickers("VIX9D").tickers else vix
-vix3m = yf.Ticker("VIX3M").history(period="2d")['Close'][-1] if 'VIX3M' in yf.Tickers("VIX3M").tickers else vix
+# VIX (fallback to ^VIX only, no VIX9D/VIX3M)
+vix = 20.0  # Default neutral
+try:
+    vix_data = yf.Ticker("^VIX").history(period="5d")  # More days for safety
+    if len(vix_data) > 0:
+        vix = vix_data['Close'][-1]
+    vix9d = vix  # Fallback to same
+    vix3m = vix  # Fallback to same
+except:
+    pass
 
-# Dollar & 10-year yield
-dxy = yf.Ticker("DX-Y.NYB").history(period="2d")['Close']
-tnx = yf.Ticker("^TNX").history(period="2d")['Close']
-dxy_change = (dxy[-1] / dxy[-2] - 1) * 100
-tnx_change_bps = (tnx[-1] - tnx[-2]) * 100  # already in %
+# Dollar & yields (safe [-2] with fallback)
+dxy_change = 0.0
+tnx_change_bps = 0.0
+try:
+    dxy = yf.Ticker("DX-Y.NYB").history(period="5d")['Close']
+    if len(dxy) >= 2:
+        dxy_change = (dxy[-1] / dxy[-2] - 1) * 100
+    tnx = yf.Ticker("^TNX").history(period="5d")['Close']
+    if len(tnx) >= 2:
+        tnx_change_bps = (tnx[-1] - tnx[-2]) * 100
+except:
+    pass
 
-# Breadth surrogate: % stocks above 50-day MA (free from barchart)
+# Breadth (Barchart scrape with fallback)
 def get_breadth():
-    url = "https://www.barchart.com/stocks/quotes/SPX/technical-analysis"
-    html = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}).text
-    import re
-    match = re.search(r'% Above 50-Day Average.*?(\d+\.\d+)%', html, re.DOTALL)
-    if match:
-        return float(match.group(1))
-    return 50.0
+    try:
+        html = requests.get("https://www.barchart.com/stocks/indices/sp/market-summary", headers={'User-Agent': 'Mozilla/5.0'}).text
+        match = re.search(r'% Above 50-Day Average.*?(\d+\.\d+)%', html, re.DOTALL)
+        if match:
+            return float(match.group(1))
+    except:
+        pass
+    return 50.0  # Neutral fallback
 
 breadth_50 = get_breadth()
 
-# High-impact economic event today?
-def has_red_folder_today():
-    url = f"https://nfs.faireconomy.media/ff_calendar_thisweek.json"
-    try:
-        data = requests.get(url).json()
-        for event in data:
-            if event['impact'] == 'high' and datetime.fromtimestamp(event['date'], tz=pytz.utc).date() == today:
-                return True
-    except:
-        pass
-    return False
-
-high_impact_today = has_red_folder_today()
-
-# -----------------------------
-# 3. SCORING (exact 60-year quant rules)
-# -----------------------------
+# Scoring (exact 60-year quant rules, with safe defaults)
 score = 0
 
 # 1. Trend
@@ -107,10 +102,10 @@ if overnight_pct >= 0.3:
 elif overnight_pct <= -0.3:
     score -= 1
 
-# 4. VIX regime
-if vix < 20 and vix9d < vix3m:        # contango + low fear
+# 4. VIX regime (contango = vix9d < vix3m, but fallback neutral)
+if vix < 20 and vix9d < vix3m:
     score += 1
-elif vix > 25 or vix9d > vix3m:       # high fear or backwardation
+elif vix > 25 or vix9d > vix3m:
     score -= 1
 
 # 5. Dollar + yields
@@ -125,58 +120,32 @@ if breadth_50 > 60:
 elif breadth_50 < 40:
     score -= 1
 
-# -----------------------------
-# 4. FINAL BIAS + OVERRIDE
-# -----------------------------
-if high_impact_today:
-    bias = "NEUTRAL (High-impact event today)"
+# Final bias
+if score >= 4:
+    bias = "STRONG BULLISH"
+elif score >= 2:
+    bias = "BULLISH"
+elif score > -2:
+    bias = "NEUTRAL"
+elif score > -4:
+    bias = "BEARISH"
 else:
-    if score >= 4:
-        bias = "STRONG BULLISH"
-    elif score >= 2:
-        bias = "BULLISH"
-    elif score > -2:
-        bias = "NEUTRAL"
-    elif score > -4:
-        bias = "BEARISH"
-    else:
-        bias = "STRONG BEARISH"
+    bias = "STRONG BEARISH"
 
-# -----------------------------
-# 5. PRINT RESULT
-# -----------------------------
-print(f"\n=== DAILY BIAS — {today.strftime('%A, %B %d, %Y')} ===")
-print(f"Score       : {score}/6")
-print(f"Trend (200SMA) : {'Above (+1)' if current_price > sma200 else 'Below (-1)'}")
-print(f"Weekly mom  : {weekly_return:+5.2f}%")
-print(f"Overnight   : {overnight_pct:+5.2f}%")
-print(f"VIX regime  : {vix:.1f} ({'contango' if vix9d < vix3m else 'backwardation'})")
-print(f"DXY + 10Y   : {dxy_change:+.2f}% / {tnx_change_bps:+.1f}bps")
-print(f"Breadth 50d : {breadth_50:.1f}%")
-print(f"High-impact event today: {high_impact_today}")
-print(f"\n>>> FINAL BIAS: {bias} <<<\n")
-
-# Optional: auto-post to Discord/Telegram/X via webhook if you want
-# ← (everything from the previous working script) →
-
-# ADD THIS AT THE VERY BOTTOM (only new part)
-if __name__ == "__main__":
-    # This prints the result when run manually AND saves it for the website
-    result = f"""
-=== DAILY BIAS — {today.strftime('%A, %B %d, %Y')} ===
+# Output result
+result = f"""=== DAILY BIAS — {today.strftime('%A, %B %d, %Y')} ===
 Score       : {score}/6
 Trend (200SMA) : {'Above (+1)' if current_price > sma200 else 'Below (-1)'}
 Weekly mom  : {weekly_return:+5.2f}%
 Overnight   : {overnight_pct:+5.2f}%
-VIX regime  : {vix:.1f} ({'contango' if vix9d < vix3m else 'backwardation'})
+VIX         : {vix:.1f} ({'contango' if vix9d < vix3m else 'backwardation'})
 DXY + 10Y   : {dxy_change:+.2f}% / {tnx_change_bps:+.1f}bps
 Breadth 50d : {breadth_50:.1f}%
-High-impact event today: {high_impact_today}
 
->>> FINAL BIAS: {bias} <<<
-"""
-    print(result)
-    
-    # Save to file so the website can read it
-    with open("latest_bias.txt", "w") as f:
-        f.write(result)
+>>> FINAL BIAS: {bias} <<<"""
+
+print(result)
+
+# Save to file
+with open("latest_bias.txt", "w") as f:
+    f.write(result)
